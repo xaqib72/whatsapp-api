@@ -56,11 +56,32 @@ function worker_decode_response(string $raw, int $status): array
     return $data;
 }
 
+function worker_request_headers(string $path, string $token): ?array
+{
+    $headers = ['Content-Type: application/json'];
+    if (trim($path, '/') === 'health') {
+        return $headers;
+    }
+
+    // Custom cURL headers are sent verbatim. Reject ASCII control characters
+    // before they can alter the HTTP header framing.
+    if (preg_match('/[\x00-\x1F\x7F]/', $token) === 1) {
+        return null;
+    }
+
+    $headers[] = 'X-Worker-Token: ' . $token;
+    return $headers;
+}
+
 function worker_request(string $method, string $path, array $payload = [], int $timeout = 20): array
 {
     $url = worker_request_url((string) app_config('worker.url'), $path);
     $isHealthProbe = trim($path, '/') === 'health';
     $body = $payload ? json_encode($payload, JSON_UNESCAPED_SLASHES) : '';
+    $headers = worker_request_headers($path, (string) app_config('security.worker_token'));
+    if ($headers === null) {
+        return ['ok' => false, 'status' => 0, 'error' => 'Worker authentication configuration is invalid.'];
+    }
 
     $ch = curl_init($url);
     $curlOptions = [
@@ -68,10 +89,7 @@ function worker_request(string $method, string $path, array $payload = [], int $
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_CONNECTTIMEOUT => min(3, $timeout),
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'X-Worker-Token: ' . app_config('security.worker_token'),
-        ],
+        CURLOPT_HTTPHEADER => $headers,
     ];
     $proxyOverride = worker_loopback_proxy_override($url);
     if ($proxyOverride !== null && defined('CURLOPT_PROXY')) {

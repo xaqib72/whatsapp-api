@@ -43,6 +43,18 @@ health_assert(worker_loopback_proxy_override('http://127.0.0.1:3210/health') ===
 health_assert(worker_loopback_proxy_override('https://worker.example/health') === null, 'non-loopback worker does not change proxy settings');
 health_assert(worker_safe_content_type('application/json; charset=utf-8') === 'application/json', 'content type logging strips parameters');
 
+$healthHeaders = worker_request_headers('/health', "ignored\r\nheader: value");
+health_assert(is_array($healthHeaders), 'health request headers are available even if an unused token contains controls');
+health_assert(!in_array('X-Worker-Token: ignored', $healthHeaders, true), 'health request omits the worker token header');
+health_assert(count($healthHeaders) === 1 && $healthHeaders[0] === 'Content-Type: application/json', 'health request keeps only the fixed content type header');
+
+$protectedHeaders = worker_request_headers('queue/notify', 'valid-token');
+health_assert(is_array($protectedHeaders), 'protected request accepts a token without control characters');
+health_assert(in_array('X-Worker-Token: valid-token', $protectedHeaders, true), 'protected request retains its worker token header');
+foreach (["bad\rvalue", "bad\nvalue", "bad\0value", "bad\x7Fvalue"] as $unsafeToken) {
+    health_assert(worker_request_headers('queue/notify', $unsafeToken) === null, 'protected request rejects ASCII control characters in the token');
+}
+
 $observed400 = worker_decode_response('', 400);
 health_assert(($observed400['status'] ?? null) === 400 && !empty($observed400['invalid_json']), 'reproduces empty HTTP 400 invalid JSON response');
 health_assert(!worker_health_ready($observed400), 'empty HTTP 400 response cannot pass readiness');
