@@ -41,6 +41,18 @@ function worker_request(string $method, string $path, array $payload = [], int $
     return $data;
 }
 
+function worker_health_ready(array $response): bool
+{
+    $database = $response['database'] ?? null;
+
+    return (int) ($response['status_code'] ?? 0) === 200
+        && ($response['ok'] ?? false) === true
+        && ($response['service'] ?? null) === 'whatsapp-worker'
+        && is_array($database)
+        && ($database['connected'] ?? false) === true
+        && ($database['schema_ready'] ?? false) === true;
+}
+
 function sync_session_status(int $userId, array $workerStatus): void
 {
     $state = $workerStatus['state'] ?? 'idle';

@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs';
 const migration = readFileSync(new URL('../migrations/001_initial_schema.sql', import.meta.url), 'utf8');
 const entrypoint = readFileSync(new URL('../docker/entrypoint.sh', import.meta.url), 'utf8');
 const worker = readFileSync(new URL('../worker/server.mjs', import.meta.url), 'utf8');
+const workerClient = readFileSync(new URL('../src/lib/WorkerClient.php', import.meta.url), 'utf8');
+const healthEndpoint = readFileSync(new URL('../public/api/health.php', import.meta.url), 'utf8');
 
 const requiredTables = [
   'users', 'api_keys', 'api_request_logs', 'campaigns', 'chatbot_rules', 'contacts',
@@ -33,4 +35,22 @@ test('TiDB TLS verification is enabled and failed schema startup prevents queue 
   assert.doesNotMatch(worker, /rejectUnauthorized:\s*false/);
   assert.match(worker, /Worker startup blocked; queue processor was not started/);
   assert.match(worker, /setInterval\(processQueueOnce, QUEUE_POLL_MS\)/);
+});
+
+test('worker health contract uses the actual listener port and requires database readiness', () => {
+  assert.match(entrypoint, /WORKER_URL="\$\{WORKER_URL:-http:\/\/127\.0\.0\.1:\$\{WORKER_PORT\}\}"/);
+  assert.match(entrypoint, /PassEnv .*WORKER_URL WORKER_PORT WORKER_TOKEN/);
+  assert.match(worker, /const PORT = Number\(process\.env\.WORKER_PORT \|\| 3107\)/);
+  assert.match(worker, /app\.listen\(PORT, '127\.0\.0\.1'/);
+  assert.match(worker, /app\.get\('\/health', async/);
+  assert.match(workerClient, /function worker_health_ready\(array \$response\): bool/);
+  assert.match(workerClient, /\$response\['status_code'\].*=== 200/s);
+  assert.match(workerClient, /\$database\['connected'\].*=== true/s);
+  assert.match(workerClient, /\$database\['schema_ready'\].*=== true/s);
+  assert.match(healthEndpoint, /worker_health_ready\(\$worker\)/);
+  assert.match(worker, /if \(req\.get\('X-Worker-Token'\) !== WORKER_TOKEN\)/);
+  assert.match(worker, /attempts >= max_attempts/);
+  assert.match(worker, /attempts < max_attempts/);
+  assert.match(worker, /Worker lease expired after the final delivery attempt/);
+  assert.match(worker, /Expired worker leases returned to the retry queue/);
 });

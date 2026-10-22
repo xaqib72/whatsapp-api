@@ -21,6 +21,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 loadEnv(resolve(__dirname, '..', '.env'));
 
 const PORT = Number(process.env.WORKER_PORT || 3107);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  throw new Error('WORKER_PORT must be a valid TCP port number.');
+}
 const WORKER_TOKEN = process.env.WORKER_TOKEN || 'change-this-worker-token-before-production';
 const APP_ENV = process.env.APP_ENV || 'local';
 const SECRET_VALUES = ['DB_PASSWORD', 'WORKER_TOKEN', 'SYSTEM_API_SECRET', 'SMTP_PASS']
@@ -714,9 +717,24 @@ async function startSession(userId, force = false, waitForReady = true) {
 async function claimNextMessage() {
   await db.execute(
     `UPDATE message_queue
-     SET status = 'queued', locked_at = NULL, locked_by = NULL
-     WHERE status = 'processing' AND locked_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`
+     SET status = 'failed', locked_at = NULL, locked_by = NULL,
+         error_message = COALESCE(error_message, 'Worker lease expired after the final delivery attempt.')
+     WHERE status = 'processing'
+       AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+       AND attempts >= max_attempts`
   );
+
+  const [expiredRows] = await db.execute(
+    `UPDATE message_queue
+     SET status = 'queued', locked_at = NULL, locked_by = NULL,
+         error_message = COALESCE(error_message, 'Worker lease expired; message returned to the retry queue.')
+     WHERE status = 'processing'
+       AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+       AND attempts < max_attempts`
+  );
+  if (expiredRows.affectedRows > 0) {
+    logger.warn({ count: expiredRows.affectedRows }, 'Expired worker leases returned to the retry queue');
+  }
 
   await db.execute(
     `UPDATE message_queue

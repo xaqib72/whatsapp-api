@@ -49,6 +49,11 @@ config_load_env(dirname(__DIR__) . '/.env');
 
 $appEnv = config_env('APP_ENV', 'local');
 $workerToken = config_env('WORKER_TOKEN', 'change-this-worker-token-before-production');
+$workerPort = config_env('WORKER_PORT', '3107');
+
+if (!ctype_digit((string) $workerPort) || (int) $workerPort < 1 || (int) $workerPort > 65535) {
+    throw new RuntimeException('WORKER_PORT must be a valid TCP port number.');
+}
 
 if ($appEnv === 'production' && (strlen($workerToken) < 32 || $workerToken === 'change-this-worker-token-before-production')) {
     throw new RuntimeException('Set a random WORKER_TOKEN of at least 32 characters before running in production.');
@@ -109,7 +114,10 @@ return [
         'login_lockout_minutes' => (int) config_env('LOGIN_LOCKOUT_MINUTES', '15'),
     ],
     'worker' => [
-        'url' => config_env('WORKER_URL', 'http://127.0.0.1:3107'),
+        // PHP and Node run in the same Render container. An omitted/blank URL
+        // therefore uses the worker's loopback listener and the same port.
+        'url' => rtrim(trim((string) config_env('WORKER_URL', '')) ?: 'http://127.0.0.1:' . $workerPort, '/'),
+        'port' => (int) $workerPort,
     ],
     'otp' => [
         'via_email' => config_bool('OTP_VIA_EMAIL', true),

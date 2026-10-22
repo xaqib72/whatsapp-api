@@ -7,7 +7,7 @@ require_once dirname(__DIR__, 2) . '/src/bootstrap.php';
 header('Content-Type: application/json');
 
 $worker = worker_request('GET', 'health');
-$workerOk = !empty($worker['ok']);
+$workerOk = worker_health_ready($worker);
 $requiredTables = [
     'users', 'api_keys', 'api_request_logs', 'campaigns', 'chatbot_rules', 'contacts',
     'login_attempts', 'message_logs', 'message_queue', 'password_resets',

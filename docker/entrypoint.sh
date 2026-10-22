@@ -1,8 +1,13 @@
 #!/bin/bash
 set -e
 
+# Keep the PHP health probe and Node listener on the same internal loopback port.
+# Render may omit WORKER_URL; in that case use the actual WORKER_PORT default.
+export WORKER_PORT="${WORKER_PORT:-3107}"
+export WORKER_URL="${WORKER_URL:-http://127.0.0.1:${WORKER_PORT}}"
+
 # Pass all environment variables to Apache mod_php
-echo "PassEnv DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME DB_DSN DB_SSL DB_SSL_CA APP_ENV WORKER_URL WORKER_TOKEN DEFAULT_COUNTRY_CODE APP_PUBLIC_URL APP_BASE_PATH" > /etc/apache2/conf-available/render-env.conf
+echo "PassEnv DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME DB_DSN DB_SSL DB_SSL_CA APP_ENV WORKER_URL WORKER_PORT WORKER_TOKEN DEFAULT_COUNTRY_CODE APP_PUBLIC_URL APP_BASE_PATH" > /etc/apache2/conf-available/render-env.conf
 a2enconf render-env 2>/dev/null || true
 
 # Run the idempotent, non-destructive schema migration before Supervisor can
