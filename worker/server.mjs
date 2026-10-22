@@ -1105,7 +1105,12 @@ async function databaseHealth() {
 app.get('/health', async (req, res) => {
   const databaseStatus = await databaseHealth();
   const ok = databaseStatus.connected && databaseStatus.schema_ready;
-  res.status(ok ? 200 : 503).json({ ok, service: 'whatsapp-worker', database: databaseStatus });
+  res.status(ok ? 200 : 503).json({
+    ok,
+    service: 'whatsapp-worker',
+    error: ok ? null : { code: 'database_not_ready' },
+    database: databaseStatus
+  });
 });
 
 app.get('/sessions/:userId/status', (req, res) => {
@@ -1238,7 +1243,7 @@ async function startWorker() {
   }
 
   app.listen(PORT, '127.0.0.1', () => {
-    logger.info(`WhatsApp worker listening on http://127.0.0.1:${PORT}; database schema ready`);
+    console.info(`[worker] listener=http://127.0.0.1:${PORT} health_route=GET /health database=ready`);
     setInterval(processQueueOnce, QUEUE_POLL_MS);
   });
 }

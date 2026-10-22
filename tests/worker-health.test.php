@@ -39,6 +39,13 @@ health_assert(
     worker_safe_response_excerpt('{"error":"Invalid worker token","access_token":"hidden"}') === '{"error":"Invalid worker token","access_token":"[redacted]"}',
     'diagnostic response excerpt redacts secret fields'
 );
+health_assert(worker_loopback_proxy_override('http://127.0.0.1:3210/health') === '', 'loopback worker bypasses inherited proxies');
+health_assert(worker_loopback_proxy_override('https://worker.example/health') === null, 'non-loopback worker does not change proxy settings');
+health_assert(worker_safe_content_type('application/json; charset=utf-8') === 'application/json', 'content type logging strips parameters');
+
+$observed400 = worker_decode_response('', 400);
+health_assert(($observed400['status'] ?? null) === 400 && !empty($observed400['invalid_json']), 'reproduces empty HTTP 400 invalid JSON response');
+health_assert(!worker_health_ready($observed400), 'empty HTTP 400 response cannot pass readiness');
 
 $ready = [
     'ok' => true,

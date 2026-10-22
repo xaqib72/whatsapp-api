@@ -48,7 +48,13 @@ test('worker health contract uses the actual listener port and requires database
   assert.match(workerClient, /\$database\['connected'\].*=== true/s);
   assert.match(workerClient, /\$database\['schema_ready'\].*=== true/s);
   assert.match(workerClient, /function worker_request_url\(string \$baseUrl, string \$path\): string/);
+  assert.match(workerClient, /function worker_decode_response\(string \$raw, int \$status\): array/);
   assert.match(workerClient, /worker_safe_response_excerpt\(\$raw\)/);
+  assert.match(workerClient, /worker_loopback_proxy_override\(\$url\)/);
+  assert.match(workerClient, /CURLINFO_CONTENT_TYPE/);
+  assert.match(workerClient, /CURLINFO_PRIMARY_IP/);
+  assert.match(worker, /database_not_ready/);
+  assert.match(worker, /health_route=GET \/health/);
   assert.match(healthEndpoint, /worker_health_ready\(\$worker\)/);
   assert.match(worker, /if \(req\.get\('X-Worker-Token'\) !== WORKER_TOKEN\)/);
   assert.match(worker, /attempts >= max_attempts/);

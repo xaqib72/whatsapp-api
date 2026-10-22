@@ -39,6 +39,23 @@ function worker_safe_response_excerpt(string $body): string
     return substr($body, 0, 240);
 }
 
+function worker_loopback_proxy_override(string $url): ?string
+{
+    $host = strtolower((string) (parse_url($url, PHP_URL_HOST) ?? ''));
+    return in_array($host, ['127.0.0.1', 'localhost', '::1'], true) ? '' : null;
+}
+
+function worker_decode_response(string $raw, int $status): array
+{
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+        return ['ok' => false, 'status' => $status, 'invalid_json' => true, 'error' => 'Worker returned an invalid response.'];
+    }
+
+    $data['status_code'] = $status;
+    return $data;
+}
+
 function worker_request(string $method, string $path, array $payload = [], int $timeout = 20): array
 {
     $url = worker_request_url((string) app_config('worker.url'), $path);
@@ -46,7 +63,7 @@ function worker_request(string $method, string $path, array $payload = [], int $
     $body = $payload ? json_encode($payload, JSON_UNESCAPED_SLASHES) : '';
 
     $ch = curl_init($url);
-    curl_setopt_array($ch, [
+    $curlOptions = [
         CURLOPT_CUSTOMREQUEST => strtoupper($method),
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
@@ -55,7 +72,14 @@ function worker_request(string $method, string $path, array $payload = [], int $
             'Content-Type: application/json',
             'X-Worker-Token: ' . app_config('security.worker_token'),
         ],
-    ]);
+    ];
+    $proxyOverride = worker_loopback_proxy_override($url);
+    if ($proxyOverride !== null && defined('CURLOPT_PROXY')) {
+        // libcurl can inherit HTTP_PROXY/HTTPS_PROXY from the container. Never
+        // route a same-container health check through an external proxy.
+        $curlOptions[constant('CURLOPT_PROXY')] = $proxyOverride;
+    }
+    curl_setopt_array($ch, $curlOptions);
 
     if ($body !== '') {
         curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
@@ -64,28 +88,35 @@ function worker_request(string $method, string $path, array $payload = [], int $
     $raw = curl_exec($ch);
     $error = curl_error($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $contentType = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    $peerAddress = (string) curl_getinfo($ch, CURLINFO_PRIMARY_IP);
     curl_close($ch);
 
     if ($raw === false) {
         if ($isHealthProbe) {
-            error_log('[worker-health] target=' . worker_safe_target($url) . ' status=' . $status . ' response=[no response] transport_error');
+            error_log('[worker-health] target=' . worker_safe_target($url) . ' peer=' . ($peerAddress ?: 'none') . ' status=' . $status . ' content_type=' . worker_safe_content_type($contentType) . ' response=[no response] transport_error');
         }
         return ['ok' => false, 'status' => 0, 'error' => $error ?: 'Worker is not reachable.'];
     }
 
-    $data = json_decode($raw, true);
-    if (!is_array($data)) {
+    $data = worker_decode_response($raw, $status);
+    if (!empty($data['invalid_json'])) {
         if ($isHealthProbe) {
-            error_log('[worker-health] target=' . worker_safe_target($url) . ' status=' . $status . ' response=' . worker_safe_response_excerpt($raw) . ' invalid_json');
+            error_log('[worker-health] target=' . worker_safe_target($url) . ' peer=' . ($peerAddress ?: 'none') . ' status=' . $status . ' content_type=' . worker_safe_content_type($contentType) . ' response=' . worker_safe_response_excerpt($raw) . ' invalid_json');
         }
-        return ['ok' => false, 'status' => $status, 'error' => 'Worker returned an invalid response.'];
+        return $data;
     }
 
-    $data['status_code'] = $status;
     if ($isHealthProbe && !worker_health_ready($data)) {
-        error_log('[worker-health] target=' . worker_safe_target($url) . ' status=' . $status . ' response=' . worker_safe_response_excerpt($raw) . ' readiness_rejected');
+        error_log('[worker-health] target=' . worker_safe_target($url) . ' peer=' . ($peerAddress ?: 'none') . ' status=' . $status . ' content_type=' . worker_safe_content_type($contentType) . ' response=' . worker_safe_response_excerpt($raw) . ' readiness_rejected');
     }
     return $data;
+}
+
+function worker_safe_content_type(string $contentType): string
+{
+    $contentType = strtolower(trim(explode(';', $contentType, 2)[0]));
+    return preg_match('#^[a-z0-9.+-]+/[a-z0-9.+-]+$#', $contentType) === 1 ? $contentType : 'unknown';
 }
 
 function worker_health_ready(array $response): bool
