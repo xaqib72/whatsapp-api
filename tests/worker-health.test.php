@@ -27,6 +27,18 @@ health_assert(
     $config['worker']['url'] === 'http://127.0.0.1:3210',
     'missing WORKER_URL uses the loopback URL derived from WORKER_PORT'
 );
+health_assert(
+    worker_request_url('http://127.0.0.1:3210/', '/health') === 'http://127.0.0.1:3210/health',
+    'health request targets the registered root /health route'
+);
+health_assert(
+    worker_safe_target('https://user:pass@example.invalid/wrong/path?token=hidden#fragment') === 'https://example.invalid/wrong/path',
+    'diagnostic target omits credentials, query strings, and fragments'
+);
+health_assert(
+    worker_safe_response_excerpt('{"error":"Invalid worker token","access_token":"hidden"}') === '{"error":"Invalid worker token","access_token":"[redacted]"}',
+    'diagnostic response excerpt redacts secret fields'
+);
 
 $ready = [
     'ok' => true,
@@ -50,6 +62,8 @@ health_assert(!worker_health_ready($invalidToken), 'unauthorized worker response
 $badRequest = $ready;
 $badRequest['status_code'] = 400;
 health_assert(!worker_health_ready($badRequest), 'unexpected HTTP 400 response fails readiness');
+$wrongHandler = ['ok' => false, 'status_code' => 400, 'error' => 'Bad Request'];
+health_assert(!worker_health_ready($wrongHandler), 'HTTP 400 from a handler without worker health fields is rejected');
 
 $unreachable = ['ok' => false, 'status_code' => 0];
 health_assert(!worker_health_ready($unreachable), 'unreachable worker fails readiness');

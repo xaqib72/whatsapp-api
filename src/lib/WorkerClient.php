@@ -2,9 +2,47 @@
 
 declare(strict_types=1);
 
+function worker_request_url(string $baseUrl, string $path): string
+{
+    return rtrim($baseUrl, '/') . '/' . ltrim($path, '/');
+}
+
+function worker_safe_target(string $url): string
+{
+    $parts = parse_url($url);
+    if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+        return '[invalid-worker-url]';
+    }
+
+    $path = (string) ($parts['path'] ?? '/');
+    $path = preg_replace('#/(?:[^/]*(?:token|secret|password|key)[^/]*)#i', '/[redacted]', $path) ?? '/[redacted]';
+    return strtolower((string) $parts['scheme']) . '://' . $parts['host']
+        . (isset($parts['port']) ? ':' . (int) $parts['port'] : '') . $path;
+}
+
+function worker_safe_response_excerpt(string $body): string
+{
+    $body = html_entity_decode(strip_tags($body), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $body = preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $body) ?? '';
+    $body = preg_replace('/\s+/u', ' ', trim($body)) ?? '';
+    foreach ([
+        app_config('security.worker_token'),
+        app_config('db.password'),
+        app_config('system_api.secret'),
+        app_config('smtp.pass'),
+    ] as $secret) {
+        if (is_string($secret) && $secret !== '') {
+            $body = str_replace($secret, '[redacted]', $body);
+        }
+    }
+    $body = preg_replace('/(authorization|token|password|passwd|secret)(["\']?\s*[:=]\s*["\']?)[^\s,"\']+/i', '$1$2[redacted]', $body) ?? '';
+    return substr($body, 0, 240);
+}
+
 function worker_request(string $method, string $path, array $payload = [], int $timeout = 20): array
 {
-    $url = rtrim((string) app_config('worker.url'), '/') . '/' . ltrim($path, '/');
+    $url = worker_request_url((string) app_config('worker.url'), $path);
+    $isHealthProbe = trim($path, '/') === 'health';
     $body = $payload ? json_encode($payload, JSON_UNESCAPED_SLASHES) : '';
 
     $ch = curl_init($url);
@@ -29,15 +67,24 @@ function worker_request(string $method, string $path, array $payload = [], int $
     curl_close($ch);
 
     if ($raw === false) {
+        if ($isHealthProbe) {
+            error_log('[worker-health] target=' . worker_safe_target($url) . ' status=' . $status . ' response=[no response] transport_error');
+        }
         return ['ok' => false, 'status' => 0, 'error' => $error ?: 'Worker is not reachable.'];
     }
 
     $data = json_decode($raw, true);
     if (!is_array($data)) {
+        if ($isHealthProbe) {
+            error_log('[worker-health] target=' . worker_safe_target($url) . ' status=' . $status . ' response=' . worker_safe_response_excerpt($raw) . ' invalid_json');
+        }
         return ['ok' => false, 'status' => $status, 'error' => 'Worker returned an invalid response.'];
     }
 
     $data['status_code'] = $status;
+    if ($isHealthProbe && !worker_health_ready($data)) {
+        error_log('[worker-health] target=' . worker_safe_target($url) . ' status=' . $status . ' response=' . worker_safe_response_excerpt($raw) . ' readiness_rejected');
+    }
     return $data;
 }
 

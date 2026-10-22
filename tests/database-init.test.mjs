@@ -38,7 +38,7 @@ test('TiDB TLS verification is enabled and failed schema startup prevents queue 
 });
 
 test('worker health contract uses the actual listener port and requires database readiness', () => {
-  assert.match(entrypoint, /WORKER_URL="\$\{WORKER_URL:-http:\/\/127\.0\.0\.1:\$\{WORKER_PORT\}\}"/);
+  assert.match(entrypoint, /WORKER_URL="http:\/\/127\.0\.0\.1:\$\{WORKER_PORT\}"/);
   assert.match(entrypoint, /PassEnv .*WORKER_URL WORKER_PORT WORKER_TOKEN/);
   assert.match(worker, /const PORT = Number\(process\.env\.WORKER_PORT \|\| 3107\)/);
   assert.match(worker, /app\.listen\(PORT, '127\.0\.0\.1'/);
@@ -47,6 +47,8 @@ test('worker health contract uses the actual listener port and requires database
   assert.match(workerClient, /\$response\['status_code'\].*=== 200/s);
   assert.match(workerClient, /\$database\['connected'\].*=== true/s);
   assert.match(workerClient, /\$database\['schema_ready'\].*=== true/s);
+  assert.match(workerClient, /function worker_request_url\(string \$baseUrl, string \$path\): string/);
+  assert.match(workerClient, /worker_safe_response_excerpt\(\$raw\)/);
   assert.match(healthEndpoint, /worker_health_ready\(\$worker\)/);
   assert.match(worker, /if \(req\.get\('X-Worker-Token'\) !== WORKER_TOKEN\)/);
   assert.match(worker, /attempts >= max_attempts/);
