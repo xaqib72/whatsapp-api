@@ -23,6 +23,15 @@ loadEnv(resolve(__dirname, '..', '.env'));
 const PORT = Number(process.env.WORKER_PORT || 3107);
 const WORKER_TOKEN = process.env.WORKER_TOKEN || 'change-this-worker-token-before-production';
 const APP_ENV = process.env.APP_ENV || 'local';
+const SECRET_VALUES = ['DB_PASSWORD', 'WORKER_TOKEN', 'SYSTEM_API_SECRET', 'SMTP_PASS']
+  .map((name) => process.env[name])
+  .filter((value) => typeof value === 'string' && value.length > 0);
+
+function safeErrorMessage(error) {
+  let message = String(error?.message || 'Unknown database error');
+  for (const secret of SECRET_VALUES) message = message.split(secret).join('[redacted]');
+  return message.replace(/(password|passwd|token|secret)=([^\s;]+)/ig, '$1=[redacted]');
+}
 
 const ISO_TO_DIAL = {
   in: '91', us: '1', ca: '1', gb: '44', uk: '44', au: '61',
@@ -60,19 +69,54 @@ function isMissingSleepingColumnError(error) {
 }
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
-if (APP_ENV === 'production' && WORKER_TOKEN === 'change-this-worker-token-before-production') {
-  throw new Error('Set a strong WORKER_TOKEN before running the worker in production.');
+if (APP_ENV === 'production' && (WORKER_TOKEN.length < 32 || WORKER_TOKEN === 'change-this-worker-token-before-production')) {
+  throw new Error('Set a random WORKER_TOKEN of at least 32 characters before running the worker in production.');
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
 
+function databaseOptions() {
+  const options = {
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: Number(process.env.DB_PORT || 3306),
+    database: process.env.DB_NAME || 'whatsapp_api'
+  };
+  const dsn = process.env.DB_DSN;
+  if (dsn) {
+    const match = dsn.match(/^mysql:(.+)$/i);
+    if (!match) throw new Error('DB_DSN must use the mysql: DSN format.');
+    for (const part of match[1].split(';')) {
+      const [key, ...parts] = part.split('=');
+      if (!key || parts.length === 0) continue;
+      const value = parts.join('=').trim();
+      if (key.trim() === 'host') options.host = value;
+      else if (key.trim() === 'port') options.port = Number(value);
+      else if (key.trim() === 'dbname') options.database = value;
+      else if (!['charset', 'unix_socket'].includes(key.trim())) throw new Error('DB_DSN contains an unsupported connection option.');
+    }
+  }
+  if (options.database !== 'whatsapp_api') throw new Error('DB_NAME/DB_DSN must select whatsapp_api.');
+  if (!options.host || !Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
+    throw new Error('DB_HOST and DB_PORT must identify a valid database endpoint.');
+  }
+  return options;
+}
+
+const database = databaseOptions();
+const dbSslValue = String(process.env.DB_SSL || '').toLowerCase();
+const isTiDBEndpoint = database.host.toLowerCase().includes('tidbcloud.com') || database.port === 4000;
+const dbSsl = isTiDBEndpoint || ['1', 'true', 'yes', 'on'].includes(dbSslValue);
+const dbSslOptions = dbSsl
+  ? { rejectUnauthorized: true, ...(process.env.DB_SSL_CA ? { ca: readFileSync(process.env.DB_SSL_CA) } : {}) }
+  : undefined;
+
 const db = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 3306),
+  host: database.host,
+  port: database.port,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'whatsapp_api',
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+  database: database.database,
+  ssl: dbSslOptions,
   waitForConnections: true,
   connectionLimit: 5
 });
@@ -100,11 +144,11 @@ function loadEnv(path) {
 }
 
 process.on('uncaughtException', (error) => {
-  logger.error({ error }, 'Uncaught worker exception');
+  logger.error({ error_class: error?.name || 'Error', error_code: error?.code || null, error_message: safeErrorMessage(error) }, 'Uncaught worker exception');
 });
 
 process.on('unhandledRejection', (error) => {
-  logger.error({ error }, 'Unhandled worker rejection');
+  logger.error({ error_class: error?.name || 'Error', error_code: error?.code || null, error_message: safeErrorMessage(error) }, 'Unhandled worker rejection');
 });
 
 app.use((req, res, next) => {
@@ -1015,8 +1059,35 @@ app.post('/queue/notify', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'whatsapp-worker' });
+const REQUIRED_TABLES = [
+  'users', 'api_keys', 'api_request_logs', 'campaigns', 'chatbot_rules', 'contacts',
+  'login_attempts', 'message_logs', 'message_queue', 'password_resets',
+  'webhooks', 'webhook_deliveries', 'whatsapp_sessions'
+];
+
+async function databaseHealth() {
+  try {
+    const connection = await db.getConnection();
+    try {
+      await connection.query('SELECT 1');
+      const [rows] = await connection.query(
+        'SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()'
+      );
+      const found = new Set(rows.map((row) => row.TABLE_NAME || row.table_name));
+      const missing = REQUIRED_TABLES.filter((table) => !found.has(table));
+      return { connected: true, schema_ready: missing.length === 0, missing_tables: missing };
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    return { connected: false, schema_ready: false, missing_tables: [], error: safeErrorMessage(error) };
+  }
+}
+
+app.get('/health', async (req, res) => {
+  const databaseStatus = await databaseHealth();
+  const ok = databaseStatus.connected && databaseStatus.schema_ready;
+  res.status(ok ? 200 : 503).json({ ok, service: 'whatsapp-worker', database: databaseStatus });
 });
 
 app.get('/sessions/:userId/status', (req, res) => {
@@ -1135,8 +1206,28 @@ app.post('/sessions/:userId/send', async (req, res) => {
   }
 });
 
-app.listen(PORT, '127.0.0.1', () => {
-  logger.info(`WhatsApp worker listening on http://127.0.0.1:${PORT}`);
-  setInterval(processQueueOnce, QUEUE_POLL_MS);
+async function startWorker() {
+  const databaseStatus = await databaseHealth();
+  if (!databaseStatus.connected || !databaseStatus.schema_ready) {
+    const error = new Error(
+      databaseStatus.error || `Database schema is incomplete; missing tables: ${databaseStatus.missing_tables.join(', ')}`
+    );
+    error.name = 'DatabaseInitializationError';
+    logger.error({ error_class: error.name, error_message: safeErrorMessage(error) }, 'Worker startup blocked; queue processor was not started');
+    await db.end();
+    process.exitCode = 1;
+    return;
+  }
+
+  app.listen(PORT, '127.0.0.1', () => {
+    logger.info(`WhatsApp worker listening on http://127.0.0.1:${PORT}; database schema ready`);
+    setInterval(processQueueOnce, QUEUE_POLL_MS);
+  });
+}
+
+startWorker().catch(async (error) => {
+  logger.error({ error_class: error?.name || 'Error', error_code: error?.code || null, error_message: safeErrorMessage(error) }, 'Worker startup failed; queue processor was not started');
+  await db.end().catch(() => {});
+  process.exitCode = 1;
 });
 

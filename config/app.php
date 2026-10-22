@@ -50,21 +50,47 @@ config_load_env(dirname(__DIR__) . '/.env');
 $appEnv = config_env('APP_ENV', 'local');
 $workerToken = config_env('WORKER_TOKEN', 'change-this-worker-token-before-production');
 
-if ($appEnv === 'production' && $workerToken === 'change-this-worker-token-before-production') {
-    throw new RuntimeException('Set a strong WORKER_TOKEN before running in production.');
+if ($appEnv === 'production' && (strlen($workerToken) < 32 || $workerToken === 'change-this-worker-token-before-production')) {
+    throw new RuntimeException('Set a random WORKER_TOKEN of at least 32 characters before running in production.');
 }
 
 $dbHost = config_env('DB_HOST', '127.0.0.1');
 $dbPort = config_env('DB_PORT', '3306');
 $dbName = config_env('DB_NAME', 'whatsapp_api');
+if ($dbName !== 'whatsapp_api') {
+    throw new RuntimeException('DB_NAME must be whatsapp_api for this deployment.');
+}
 $defaultDsn = "mysql:host={$dbHost};port={$dbPort};dbname={$dbName};charset=utf8mb4";
+$dbDsn = config_env('DB_DSN', $defaultDsn);
+$dsnDatabase = [];
+preg_match('/(?:^|;)dbname=([^;]+)/i', (string) preg_replace('/^mysql:/i', '', $dbDsn), $dsnDatabase);
+if (empty($dsnDatabase[1])
+    || $dsnDatabase[1] !== 'whatsapp_api') {
+    throw new RuntimeException('DB_DSN must point to the whatsapp_api database.');
+}
+if (!ctype_digit((string) $dbPort) || (int) $dbPort < 1 || (int) $dbPort > 65535) {
+    throw new RuntimeException('DB_PORT must be a valid TCP port number.');
+}
+$dsnHost = $dbHost;
+$dsnPort = (string) $dbPort;
+$dsnHostMatch = [];
+$dsnPortMatch = [];
+preg_match('/(?:^|;)host=([^;]+)/i', (string) preg_replace('/^mysql:/i', '', $dbDsn), $dsnHostMatch);
+preg_match('/(?:^|;)port=([^;]+)/i', (string) preg_replace('/^mysql:/i', '', $dbDsn), $dsnPortMatch);
+if (!empty($dsnHostMatch[1])) {
+    $dsnHost = $dsnHostMatch[1];
+}
+if (!empty($dsnPortMatch[1])) {
+    $dsnPort = $dsnPortMatch[1];
+}
 
 return [
     'db' => [
-        'dsn' => config_env('DB_DSN', $defaultDsn),
+        'dsn' => $dbDsn,
         'user' => config_env('DB_USER', 'root'),
         'password' => config_env('DB_PASSWORD', ''),
-        'ssl' => config_bool('DB_SSL', str_contains($dbHost, 'tidbcloud.com') || (string) $dbPort === '4000'),
+        'ssl' => str_contains(strtolower($dsnHost), 'tidbcloud.com') || $dsnPort === '4000' || config_bool('DB_SSL'),
+        'ssl_ca' => config_env('DB_SSL_CA', ''),
     ],
     'app' => [
         'env' => $appEnv,
