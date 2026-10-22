@@ -1,4 +1,5 @@
 import express from 'express';
+import { attachClientErrorDiagnostics } from './http-diagnostics.mjs';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import mysql from 'mysql2/promise';
@@ -1103,9 +1104,15 @@ async function databaseHealth() {
 }
 
 app.get('/health', async (req, res) => {
+  logger.info({ event: 'health_handler_started', method: 'GET', path: '/health' }, 'Worker health handler entered');
   const databaseStatus = await databaseHealth();
   const ok = databaseStatus.connected && databaseStatus.schema_ready;
-  res.status(ok ? 200 : 503).json({
+  const statusCode = ok ? 200 : 503;
+  const outcome = ok ? 'ready' : 'database_not_ready';
+  res.once('finish', () => {
+    logger.info({ event: 'health_handler_finished', status: res.statusCode, outcome }, 'Worker health handler completed');
+  });
+  res.status(statusCode).json({
     ok,
     service: 'whatsapp-worker',
     error: ok ? null : { code: 'database_not_ready' },
@@ -1242,10 +1249,11 @@ async function startWorker() {
     return;
   }
 
-  app.listen(PORT, '127.0.0.1', () => {
+  const server = app.listen(PORT, '127.0.0.1', () => {
     console.info(`[worker] listener=http://127.0.0.1:${PORT} health_route=GET /health database=ready`);
     setInterval(processQueueOnce, QUEUE_POLL_MS);
   });
+  attachClientErrorDiagnostics(server, logger);
 }
 
 startWorker().catch(async (error) => {
