@@ -16,4 +16,11 @@ a2enconf render-env 2>/dev/null || true
 # start Apache or the queue worker. `set -e` prevents workers starting on failure.
 php /var/www/html/scripts/migrate.php
 
+# Optional private first-account bootstrap. Credentials are read only from the
+# deployment environment and are never written to logs or passed as arguments.
+if [[ -n "${INITIAL_ADMIN_EMAIL:-}" || -n "${INITIAL_ADMIN_PASSWORD:-}" ]]; then
+    export INITIAL_ADMIN_EMAIL INITIAL_ADMIN_PASSWORD INITIAL_ADMIN_NAME
+    php /var/www/html/scripts/create-initial-admin.php
+fi
+
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
