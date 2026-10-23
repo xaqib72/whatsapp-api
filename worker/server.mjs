@@ -663,38 +663,53 @@ async function startSession(userId, force = false, waitForReady = true) {
           
           const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.buttonsResponseMessage?.selectedButtonId || msg.message.listResponseMessage?.title || '';
           if (!text.trim()) continue;
-          // Insert inside the existing `for (const msg of m.messages)` loop in worker/server.mjs,
-// immediately after `if (!text.trim()) continue;` and before chatbot rule matching.
-// The parent code already filters `msg.key.fromMe` and status broadcasts.
-const inboundUrl = String(process.env.ZYOFY_INBOUND_WEBHOOK_URL || '').trim();
-          logger.info({ inboundUrlConfigured: Boolean(inboundUrl), inboundSecretConfigured: Boolean(inboundSecret) }, 'ZYOFY inbound callback reached');
-const inboundSecret = String(process.env.ZYOFY_INBOUND_WEBHOOK_SECRET || '');
-          logger.info({ inboundUrlConfigured: Boolean(inboundUrl), inboundSecretConfigured: Boolean(inboundSecret) }, 'ZYOFY inbound callback reached');
-if (inboundUrl && inboundSecret) {
-  try {
-    const inboundPayload = {
-      event: 'message.received',
-      message_id: String(msg.key.id || ''),
-      from: String(msg.key.remoteJid || '').replace(/@s\.whatsapp\.net$/, ''),
-      text: String(text),
-      timestamp: new Date().toISOString()
-    };
-    // Only direct one-to-one chats; do not map group JIDs to user accounts.
-    if (inboundPayload.message_id && inboundPayload.from && !String(msg.key.remoteJid || '').endsWith('@g.us')) {
-      const raw = JSON.stringify(inboundPayload);
-      const signature = crypto.createHmac('sha256', inboundSecret).update(raw).digest('hex');
-      const response = await fetch(inboundUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-WA-Hub-Signature': signature },
-        body: raw,
-        signal: AbortSignal.timeout(20000)
-      });
-      if (!response.ok) logger.warn({ status: response.status }, 'ZYOFY inbound webhook rejected a message');
-    }
-  } catch (error) {
-    logger.warn({ error: error?.name || 'WebhookError' }, 'ZYOFY inbound webhook delivery failed');
-  }
-}
+          // Forward incoming direct messages to ZYOFY. Keep this before chatbot rules.
+          const inboundUrl = String(process.env.ZYOFY_INBOUND_WEBHOOK_URL || '').trim();
+          const inboundSecret = String(process.env.ZYOFY_INBOUND_WEBHOOK_SECRET || '');
+          logger.info(
+            { inboundUrlConfigured: Boolean(inboundUrl), inboundSecretConfigured: Boolean(inboundSecret) },
+            'ZYOFY inbound callback reached'
+          );
+
+          if (inboundUrl && inboundSecret) {
+            try {
+              const remoteJid = String(msg.key.remoteJid || '');
+              // Only one-to-one phone-number chats; skip groups, broadcasts and LID-only JIDs.
+              const isDirectPhoneChat = remoteJid.endsWith('@s.whatsapp.net');
+              const inboundPayload = {
+                event: 'message.received',
+                message_id: String(msg.key.id || ''),
+                from: isDirectPhoneChat ? remoteJid.replace(/@s\.whatsapp\.net$/, '') : '',
+                text: String(text),
+                timestamp: new Date().toISOString()
+              };
+
+              if (inboundPayload.message_id && inboundPayload.from) {
+                const raw = JSON.stringify(inboundPayload);
+                const signature = crypto.createHmac('sha256', inboundSecret).update(raw).digest('hex');
+                const response = await fetch(inboundUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-WA-Hub-Signature': signature
+                  },
+                  body: raw,
+                  signal: AbortSignal.timeout(20000)
+                });
+
+                if (!response.ok) {
+                  logger.warn({ status: response.status }, 'ZYOFY inbound webhook rejected a message');
+                } else {
+                  logger.info({ status: response.status, messageId: inboundPayload.message_id }, 'ZYOFY inbound webhook delivered');
+                }
+              }
+            } catch (error) {
+              logger.warn(
+                { error: error?.name || 'WebhookError' },
+                'ZYOFY inbound webhook delivery failed'
+              );
+            }
+          }
 
           const [rules] = await db.execute('SELECT * FROM chatbot_rules WHERE user_id = ? AND status = "active"', [userId]);
           if (!rules || rules.length === 0) continue;
