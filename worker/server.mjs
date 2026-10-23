@@ -669,6 +669,7 @@ async function startSession(userId, force = false, waitForReady = true) {
 const inboundUrl = String(process.env.ZYOFY_INBOUND_WEBHOOK_URL || '').trim();
           logger.info({ inboundUrlConfigured: Boolean(inboundUrl), inboundSecretConfigured: Boolean(inboundSecret) }, 'ZYOFY inbound callback reached');
 const inboundSecret = String(process.env.ZYOFY_INBOUND_WEBHOOK_SECRET || '');
+          logger.info({ inboundUrlConfigured: Boolean(inboundUrl), inboundSecretConfigured: Boolean(inboundSecret) }, 'ZYOFY inbound callback reached');
 if (inboundUrl && inboundSecret) {
   try {
     const inboundPayload = {
