@@ -667,6 +667,7 @@ async function startSession(userId, force = false, waitForReady = true) {
 // immediately after `if (!text.trim()) continue;` and before chatbot rule matching.
 // The parent code already filters `msg.key.fromMe` and status broadcasts.
 const inboundUrl = String(process.env.ZYOFY_INBOUND_WEBHOOK_URL || '').trim();
+          logger.info({ inboundUrlConfigured: Boolean(inboundUrl), inboundSecretConfigured: Boolean(inboundSecret) }, 'ZYOFY inbound callback reached');
 const inboundSecret = String(process.env.ZYOFY_INBOUND_WEBHOOK_SECRET || '');
 if (inboundUrl && inboundSecret) {
   try {
